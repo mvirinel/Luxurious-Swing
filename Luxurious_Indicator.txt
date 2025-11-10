@@ -1,0 +1,354 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © Bongikk - Simplified Version
+
+//@version=6
+indicator('Luxurious Swing', overlay = true, max_boxes_count = 500, max_lines_count = 500, max_labels_count = 500)
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// FVG SETTINGS (SIMPLIFIED)
+// ═══════════════════════════════════════════════════════════════════════════════
+groupFVG = '📊 Fair Value Gaps'
+fvgTog = input.bool(true, 'Show FVGs', group = groupFVG)
+fvgTransparency = input.int(87, 'Box Transparency', minval = 1, maxval = 100, group = groupFVG)
+showMedian = input.bool(true, 'Show Median Line', group = groupFVG)
+medianColor = input.color(#FFD700, 'Median Color', group = groupFVG)
+green = input.color(#00D9FF, 'Bullish Color', group = groupFVG)
+red = input.color(#FF1744, 'Bearish Color', group = groupFVG)
+gapNormalized = input.float(0.1, 'Gap ATR Multiplier', step = 0.1, group = groupFVG)
+volumeMulti = input.float(1, 'Volume Multiplier', step = 0.1, group = groupFVG)
+volumePeriod = input.int(20, 'Volume Average Period', group = groupFVG)
+minHistoryBars = input.int(50, 'Min Bars for FVG Detection', minval = 1, group = groupFVG)
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// SWING SETTINGS (SIMPLIFIED)
+// ═══════════════════════════════════════════════════════════════════════════════
+groupSwing = '📈 Swing Structure'
+showSwing = input.bool(true, 'Show Swing Labels', group = groupSwing)
+prd = input.int(15, 'Swing Period', minval = 2, group = groupSwing)
+highS = input.color(#FF1744, 'High Labels Color', group = groupSwing)
+lowS = input.color(#00D9FF, 'Low Labels Color', group = groupSwing)
+yOffsetPercent = input.float(0.15, 'Label Offset %', minval = 0.01, maxval = 2.0, step = 0.05, group = groupSwing)
+maxSwingLabels = input.int(20, 'Max Swing Labels', minval = 10, group = groupSwing)
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// PREVIOUS PERIOD SETTINGS (SIMPLIFIED)
+// ═══════════════════════════════════════════════════════════════════════════════
+groupPeriod = '📅 Previous Period Levels'
+showPeriod = input.bool(true, 'Show Period Levels', group = groupPeriod)
+htf_timeframe = input.timeframe('D', 'Timeframe', options = ['D', 'W', 'M'], group = groupPeriod)
+showPDH = input.bool(true, 'Show Previous High', group = groupPeriod)
+showPDL = input.bool(true, 'Show Previous Low', group = groupPeriod)
+showWicks = input.bool(true, 'Show Wick Zones', group = groupPeriod)
+showBodyLines = input.bool(true, 'Show Body Lines', group = groupPeriod)
+showWickMedian = input.bool(true, 'Show Wick Median', group = groupPeriod)
+showBodyMedian = input.bool(true, 'Show Body Median', group = groupPeriod)
+pdh_color = input.color(#FF1744, 'High Color', group = groupPeriod)
+pdl_color = input.color(#00D9FF, 'Low Color', group = groupPeriod)
+wick_transparency = input.int(92, 'Wick Transparency', minval = 0, maxval = 100, group = groupPeriod)
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// PREVIOUS PERIOD LEVELS
+// ═══════════════════════════════════════════════════════════════════════════════
+var float pdh = na
+var float pdl = na
+var float body_high = na
+var float body_low = na
+var float body_median_price = na
+var int yesterday_start_bar = na
+var int today_start_bar = na
+
+newPeriod = ta.change(time(htf_timeframe)) != 0
+
+prevHigh = request.security(syminfo.tickerid, htf_timeframe, high[1], lookahead = barmerge.lookahead_on)
+prevLow = request.security(syminfo.tickerid, htf_timeframe, low[1], lookahead = barmerge.lookahead_on)
+prevOpen = request.security(syminfo.tickerid, htf_timeframe, open[1], lookahead = barmerge.lookahead_on)
+prevClose = request.security(syminfo.tickerid, htf_timeframe, close[1], lookahead = barmerge.lookahead_on)
+
+var line pdh_line = na
+var line pdl_line = na
+var line body_high_line = na
+var line body_low_line = na
+var line body_median_line = na
+var box upper_wick_box = na
+var box lower_wick_box = na
+var line upper_wick_median = na
+var line lower_wick_median = na
+var float upper_wick_median_price = na
+var float lower_wick_median_price = na
+
+if newPeriod and showPeriod
+    today_start_bar := bar_index
+    pdh := prevHigh
+    pdl := prevLow
+    body_high := math.max(prevOpen, prevClose)
+    body_low := math.min(prevOpen, prevClose)
+    body_median_price := (body_high + body_low) / 2
+    yesterday_start_bar := nz(today_start_bar[1], na)
+
+if newPeriod and not na(pdh) and not na(pdl) and not na(yesterday_start_bar) and showPeriod
+    // Delete previous lines and boxes
+    if not na(pdh_line)
+        line.delete(pdh_line)
+    if not na(pdl_line)
+        line.delete(pdl_line)
+    if not na(upper_wick_box)
+        box.delete(upper_wick_box)
+    if not na(lower_wick_box)
+        box.delete(lower_wick_box)
+    if not na(upper_wick_median)
+        line.delete(upper_wick_median)
+    if not na(lower_wick_median)
+        line.delete(lower_wick_median)
+    if not na(body_median_line)
+        line.delete(body_median_line)
+    if not na(body_high_line)
+        line.delete(body_high_line)
+    if not na(body_low_line)
+        line.delete(body_low_line)
+
+    // Draw previous high line
+    if showPDH
+        pdh_line := line.new(yesterday_start_bar, pdh, today_start_bar, pdh, color = pdh_color, width = 1, style = line.style_dotted)
+
+    // Draw previous low line
+    if showPDL
+        pdl_line := line.new(yesterday_start_bar, pdl, today_start_bar, pdl, color = pdl_color, width = 1, style = line.style_dotted)
+
+    // Draw body lines
+    if showBodyLines
+        body_high_line := line.new(yesterday_start_bar, body_high, today_start_bar, body_high, color = color.new(pdh_color, 50), width = 1, style = line.style_dotted)
+        body_low_line := line.new(yesterday_start_bar, body_low, today_start_bar, body_low, color = color.new(pdl_color, 50), width = 1, style = line.style_dotted)
+
+    // Draw body median line
+    if showBodyMedian
+        body_median_line := line.new(yesterday_start_bar, body_median_price, today_start_bar, body_median_price, color = #FFD700, width = 1, style = line.style_dotted)
+
+    // Draw wick boxes and median for upper wick
+    if showWicks and body_high < pdh
+        upper_wick_box := box.new(yesterday_start_bar, body_high, today_start_bar, pdh, border_color = color.new(pdh_color, 100), bgcolor = color.new(pdh_color, wick_transparency), border_width = 1)
+        if showWickMedian
+            upper_wick_median_price := (body_high + pdh) / 2
+            upper_wick_median := line.new(yesterday_start_bar, upper_wick_median_price, today_start_bar, upper_wick_median_price, color = #808080, width = 1, style = line.style_dotted)
+
+    // Draw wick boxes and median for lower wick
+    if showWicks and pdl < body_low
+        lower_wick_box := box.new(yesterday_start_bar, pdl, today_start_bar, body_low, border_color = color.new(pdl_color, 100), bgcolor = color.new(pdl_color, wick_transparency), border_width = 1)
+        if showWickMedian
+            lower_wick_median_price := (pdl + body_low) / 2
+            lower_wick_median := line.new(yesterday_start_bar, lower_wick_median_price, today_start_bar, lower_wick_median_price, color = #808080, width = 1, style = line.style_dotted)
+
+// Update lines to current bar
+if showPeriod
+    if not na(upper_wick_box)
+        box.set_right(upper_wick_box, bar_index)
+    if not na(lower_wick_box)
+        box.set_right(lower_wick_box, bar_index)
+    if not na(body_median_line)
+        line.set_xy2(body_median_line, bar_index, body_median_price)
+    if not na(upper_wick_median)
+        line.set_xy2(upper_wick_median, bar_index, upper_wick_median_price)
+    if not na(lower_wick_median)
+        line.set_xy2(lower_wick_median, bar_index, lower_wick_median_price)
+    if not na(pdh_line)
+        line.set_xy2(pdh_line, bar_index, pdh)
+    if not na(pdl_line)
+        line.set_xy2(pdl_line, bar_index, pdl)
+    if not na(body_high_line)
+        line.set_xy2(body_high_line, bar_index, body_high)
+    if not na(body_low_line)
+        line.set_xy2(body_low_line, bar_index, body_low)
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// FAIR VALUE GAPS (SIMPLIFIED - NO EXTENSION)
+// ═══════════════════════════════════════════════════════════════════════════════
+has_recent_history = bar_index >= minHistoryBars and bar_index >= 3
+atr_fvg = ta.atr(20)
+avg_volume = ta.sma(volume, volumePeriod)
+volume_confirmed = bar_index > 2 and (volume[1] > avg_volume[1] * volumeMulti or volume[2] > avg_volume[2] * volumeMulti)
+
+gap_up_normalized = has_recent_history and atr_fvg[2] > 0 ? (low[1] - high[3]) / atr_fvg[2] : 0
+gap_down_normalized = has_recent_history and atr_fvg[2] > 0 ? (low[3] - high[1]) / atr_fvg[2] : 0
+
+fvg_up = has_recent_history and low[1] > high[3] and close[2] > high[3] and gap_up_normalized > gapNormalized and volume_confirmed and fvgTog
+fvg_down = has_recent_history and high[1] < low[3] and close[2] < low[3] and gap_down_normalized > gapNormalized and volume_confirmed and fvgTog
+
+var array<box> bull_boxes = array.new_box()
+var array<box> bear_boxes = array.new_box()
+var array<float> bull_tops = array.new_float()
+var array<float> bull_bottoms = array.new_float()
+var array<float> bear_tops = array.new_float()
+var array<float> bear_bottoms = array.new_float()
+var array<bool> bull_filled = array.new_bool()
+var array<bool> bear_filled = array.new_bool()
+var array<line> bull_medians = array.new_line()
+var array<line> bear_medians = array.new_line()
+
+// Create bullish FVG
+if fvg_up
+    top = high[3]
+    bottom = low[1]
+    median = (top + bottom) / 2
+    bx = box.new(bar_index[3], bottom, bar_index[1], top, border_color = color.new(green, 100), bgcolor = color.new(green, fvgTransparency))
+    array.push(bull_boxes, bx)
+    array.push(bull_tops, top)
+    array.push(bull_bottoms, bottom)
+    array.push(bull_filled, false)
+    med = showMedian ? line.new(bar_index[3], median, bar_index[1], median, color = medianColor, style = line.style_dotted) : na
+    array.push(bull_medians, med)
+
+// Create bearish FVG
+if fvg_down
+    top = high[1]
+    bottom = low[3]
+    median = (top + bottom) / 2
+    bx = box.new(bar_index[3], bottom, bar_index[1], top, border_color = color.new(red, 100), bgcolor = color.new(red, fvgTransparency))
+    array.push(bear_boxes, bx)
+    array.push(bear_tops, top)
+    array.push(bear_bottoms, bottom)
+    array.push(bear_filled, false)
+    med = showMedian ? line.new(bar_index[3], median, bar_index[1], median, color = medianColor, style = line.style_dotted) : na
+    array.push(bear_medians, med)
+
+// Mark filled FVGs
+if array.size(bull_boxes) > 0
+    for i = 0 to array.size(bull_boxes) - 1
+        if not array.get(bull_filled, i)
+            if low <= array.get(bull_tops, i)
+                array.set(bull_filled, i, true)
+
+if array.size(bear_boxes) > 0
+    for i = 0 to array.size(bear_boxes) - 1
+        if not array.get(bear_filled, i)
+            if high >= array.get(bear_bottoms, i)
+                array.set(bear_filled, i, true)
+
+// Delete filled FVGs immediately
+if array.size(bull_boxes) > 0
+    for i = array.size(bull_boxes) - 1 to 0 by 1
+        if array.get(bull_filled, i)
+            bx = array.get(bull_boxes, i)
+            if not na(bx)
+                box.delete(bx)
+            if showMedian and i < array.size(bull_medians)
+                med = array.get(bull_medians, i)
+                if not na(med)
+                    line.delete(med)
+            array.remove(bull_boxes, i)
+            array.remove(bull_tops, i)
+            array.remove(bull_bottoms, i)
+            array.remove(bull_filled, i)
+            array.remove(bull_medians, i)
+
+if array.size(bear_boxes) > 0
+    for i = array.size(bear_boxes) - 1 to 0 by 1
+        if array.get(bear_filled, i)
+            bx = array.get(bear_boxes, i)
+            if not na(bx)
+                box.delete(bx)
+            if showMedian and i < array.size(bear_medians)
+                med = array.get(bear_medians, i)
+                if not na(med)
+                    line.delete(med)
+            array.remove(bear_boxes, i)
+            array.remove(bear_tops, i)
+            array.remove(bear_bottoms, i)
+            array.remove(bear_filled, i)
+            array.remove(bear_medians, i)
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// SWING STRUCTURE LABELS (SIMPLIFIED)
+// ═══════════════════════════════════════════════════════════════════════════════
+var float ph = na
+var float pl = na
+var int phL = na
+var int plL = na
+var float lastHighValue = na
+var float lastLowValue = na
+
+var array<label> highLabels = array.new_label()
+var array<label> lowLabels = array.new_label()
+var array<float> highPrices = array.new_float()
+var array<float> lowPrices = array.new_float()
+
+isHighNow = showSwing and ta.highestbars(high, prd) == 0
+isLowNow = showSwing and ta.lowestbars(low, prd) == 0
+
+if isHighNow
+    ph := high
+    phL := bar_index
+
+if isLowNow
+    pl := low
+    plL := bar_index
+
+dir = na(phL) or na(plL) ? 0 : phL > plL ? 1 : -1
+dir_prev = nz(dir[1], 0)
+
+if dir != dir_prev and dir != 0 and showSwing
+    x = dir > 0 ? plL : phL
+    y = dir > 0 ? pl : ph
+    loc = dir > 0 ? label.style_label_up : label.style_label_down
+    col = dir > 0 ? lowS : highS
+    txt = ''
+
+    if dir > 0
+        if na(lastLowValue)
+            txt := 'L'
+        else if pl < lastLowValue
+            txt := 'LL'
+        else
+            txt := 'HL'
+        lastLowValue := pl
+    else
+        if na(lastHighValue)
+            txt := 'H'
+        else if ph > lastHighValue
+            txt := 'HH'
+        else
+            txt := 'LH'
+        lastHighValue := ph
+
+    atr_offset_value = ta.atr(20) * yOffsetPercent
+    y := y + (dir > 0 ? -atr_offset_value : atr_offset_value)
+
+    lbl = label.new(x, y, text = txt, style = loc, color = color.new(col, 100), textcolor = col, size = size.tiny)
+
+    if dir > 0
+        array.push(lowLabels, lbl)
+        array.push(lowPrices, y)
+        while array.size(lowLabels) > maxSwingLabels
+            lb = array.shift(lowLabels)
+            if not na(lb)
+                label.delete(lb)
+            array.shift(lowPrices)
+    else
+        array.push(highLabels, lbl)
+        array.push(highPrices, y)
+        while array.size(highLabels) > maxSwingLabels
+            lb = array.shift(highLabels)
+            if not na(lb)
+                label.delete(lb)
+            array.shift(highPrices)
+
+// Delete broken swing labels
+if showSwing and array.size(highLabels) > 0
+    for k = array.size(highLabels) - 1 to 0 by 1
+        if k < array.size(highPrices)
+            y_val = array.get(highPrices, k)
+            if not na(y_val) and close > y_val
+                lb = array.get(highLabels, k)
+                if not na(lb)
+                    label.delete(lb)
+                array.remove(highLabels, k)
+                array.remove(highPrices, k)
+
+if showSwing and array.size(lowLabels) > 0
+    for m = array.size(lowLabels) - 1 to 0 by 1
+        if m < array.size(lowPrices)
+            y_val = array.get(lowPrices, m)
+            if not na(y_val) and close < y_val
+                lb = array.get(lowLabels, m)
+                if not na(lb)
+                    label.delete(lb)
+                array.remove(lowLabels, m)
+                array.remove(lowPrices, m)
